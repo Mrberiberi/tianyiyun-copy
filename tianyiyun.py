@@ -10,6 +10,7 @@
 # 推送变量需设置 WXPUSHER_APP_TOKEN 和 WXPUSHER_UID（多个UID用&分隔）
 # 有图形验证码就是风控了 更换IP后尝试即可 自己去网页端登陆 输入验证码 再次尝试 如果还不行就只能静默几天
 #2026.05.28 四点八哩用AI修复登陆接口登陆错误问题。非常感谢
+#20260618添加cookie登陆
 import time
 import os
 # import random  # unused — removed
@@ -19,6 +20,7 @@ import base64
 import rsa
 import requests
 import re
+from http.cookies import SimpleCookie
 from urllib.parse import urlparse, parse_qs
 
 BI_RM = list("0123456789abcdefghijklmnopqrstuvwxyz")
@@ -27,13 +29,24 @@ B64MAP = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 # 从环境变量获取账号信息
 ty_usernames = os.getenv("ty_username").split('&') if os.getenv("ty_username") else []
 ty_passwords = os.getenv("ty_password").split('&') if os.getenv("ty_password") else []
+ty_cookies = [c.strip() for c in os.getenv("ty_cookie", "").splitlines() if c.strip()]
 
 # 检查环境变量
-if not ty_usernames or not ty_passwords:
-    raise ValueError("❌ 请设置环境变量 ty_username 和 ty_password")
+if not ty_cookies and (not ty_usernames or not ty_passwords):
+    raise ValueError("❌ 请设置环境变量 ty_username 和 ty_password，或设置 ty_cookie")
 
 # 组合账号信息
-accounts = [{"username": u, "password": p} for u, p in zip(ty_usernames, ty_passwords)]
+if ty_cookies:
+    account_count = max(len(ty_usernames), len(ty_cookies))
+    accounts = []
+    for i in range(account_count):
+        accounts.append({
+            "username": ty_usernames[i] if i < len(ty_usernames) else f"cookie{i + 1}",
+            "password": ty_passwords[i] if i < len(ty_passwords) else "",
+            "cookie": ty_cookies[i] if i < len(ty_cookies) else ty_cookies[0],
+        })
+else:
+    accounts = [{"username": u, "password": p, "cookie": ""} for u, p in zip(ty_usernames, ty_passwords)]
 
 # WxPusher配置
 WXPUSHER_APP_TOKEN = os.getenv("WXPUSHER_APP_TOKEN")
@@ -79,6 +92,22 @@ def rsa_encode(j_rsakey, string):
     pubkey = rsa.PublicKey.load_pkcs1_openssl_pem(rsa_key.encode())
     result = b64tohex((base64.b64encode(rsa.encrypt(f'{string}'.encode(), pubkey))).decode())
     return result
+
+def session_from_cookie(cookie):
+    s = requests.Session()
+    s.headers.update({"Cookie": cookie})
+
+    parsed_cookie = SimpleCookie()
+    try:
+        parsed_cookie.load(cookie)
+        for morsel in parsed_cookie.values():
+            for domain in ("cloud.189.cn", ".cloud.189.cn", "m.cloud.189.cn", "api.cloud.189.cn"):
+                s.cookies.set(morsel.key, morsel.value, domain=domain, path="/")
+    except Exception as e:
+        print(f"⚠️ Cookie解析异常，将直接使用原始Cookie头：{str(e)}")
+
+    print("✅ 已使用 ty_cookie 创建会话")
+    return s
 
 def login(username, password):
     print("🔄 正在执行登录流程...")
@@ -208,7 +237,10 @@ def main():
         print(f"\n🔔 处理账号：{masked_phone}")
 
         # 登录流程
-        session = login(username, password)
+        if acc.get("cookie"):
+            session = session_from_cookie(acc["cookie"])
+        else:
+            session = login(username, password)
         if not session:
             account_result["status"] = "❌"
             account_result["result"] = "登录失败"
