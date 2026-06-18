@@ -10,9 +10,10 @@
 # 推送变量需设置 WXPUSHER_APP_TOKEN 和 WXPUSHER_UID（多个UID用&分隔）
 # 有图形验证码就是风控了 更换IP后尝试即可 自己去网页端登陆 输入验证码 再次尝试 如果还不行就只能静默几天
 #2026.05.28 四点八哩用AI修复登陆接口登陆错误问题。非常感谢
-#20260618添加cookie登陆
+#20260618添加cookie登陆、登陆失败exit(1)
 import time
 import os
+import sys
 # import random  # unused — removed
 import json
 import base64
@@ -227,6 +228,7 @@ def send_wxpusher(msg):
 def main():
     print("\n=============== 天翼云盘签到开始 ===============")
     all_results = []
+    had_failure = False
 
     for acc in accounts:
         username = acc["username"]
@@ -245,6 +247,7 @@ def main():
             account_result["status"] = "❌"
             account_result["result"] = "登录失败"
             all_results.append(account_result)
+            had_failure = True
             continue
 
         # 签到流程
@@ -257,7 +260,26 @@ def main():
                 "Referer": "https://m.cloud.189.cn/zhuanti/2016/sign/index.jsp?albumBackupOpened=1",
                 "Host": "m.cloud.189.cn",
             }
-            resp = session.get(sign_url, headers=headers).json()
+            response = session.get(sign_url, headers=headers, timeout=10)
+            response.raise_for_status()
+            resp = response.json()
+            if not isinstance(resp, dict):
+                raise ValueError("签到响应格式异常")
+
+            error_code = resp.get("errorCode") or resp.get("error_code") or resp.get("res_code")
+            error_msg = (
+                resp.get("errorMsg")
+                or resp.get("error_msg")
+                or resp.get("res_message")
+                or resp.get("msg")
+                or resp.get("message")
+            )
+            if error_code and str(error_code) not in ("0", "success", "SUCCESS"):
+                raise ValueError(f"签到接口返回错误：{error_msg or error_code}")
+
+            if "isSign" not in resp and "netdiskBonus" not in resp:
+                raise ValueError(f"Cookie可能已失效，签到响应缺少成功字段：{error_msg or resp}")
+
             if resp.get('isSign') == "false":
                 account_result["status"] = "✅"
                 account_result["result"] = f"+{resp.get('netdiskBonus', '?')}M"
@@ -267,7 +289,8 @@ def main():
 
         except Exception as e:
             account_result["status"] = "❌"
-            account_result["result"] = "操作异常"
+            account_result["result"] = f"操作异常：{str(e)}"
+            had_failure = True
 
         all_results.append(account_result)
         print(f"  {account_result['status']} | {account_result['result']}")
@@ -280,6 +303,10 @@ def main():
 
     # 发送汇总推送
     send_wxpusher(msg)
+    if had_failure:
+        print("\n❌ 存在失败账号，退出码设为 1，GitHub Actions 将标记为失败。")
+        sys.exit(1)
+
     print("\n✅ 所有账号处理完成！")
 
 if __name__ == "__main__":
