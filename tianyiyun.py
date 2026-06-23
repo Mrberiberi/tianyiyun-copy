@@ -225,6 +225,12 @@ def send_wxpusher(msg):
         except Exception as e:
             print(f"❌ 推送异常：{str(e)}")
 
+def summarize_response(response, limit=300):
+    text = response.text.strip().replace("\r", " ").replace("\n", " ")
+    if len(text) > limit:
+        text = text[:limit] + "..."
+    return text or "无响应内容"
+
 def main():
     print("\n=============== 天翼云盘签到开始 ===============")
     all_results = []
@@ -261,8 +267,17 @@ def main():
                 "Host": "m.cloud.189.cn",
             }
             response = session.get(sign_url, headers=headers, timeout=10)
-            response.raise_for_status()
-            resp = response.json()
+            if response.status_code >= 400:
+                raise ValueError(
+                    f"签到请求失败：HTTP {response.status_code} {response.reason}，"
+                    f"响应：{summarize_response(response)}"
+                )
+
+            try:
+                resp = response.json()
+            except ValueError as e:
+                raise ValueError(f"签到响应不是JSON：{summarize_response(response)}") from e
+
             if not isinstance(resp, dict):
                 raise ValueError("签到响应格式异常")
 
